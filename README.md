@@ -3,7 +3,6 @@
 <pre align="center">
 ╔══════════════════════════════════════╗
 ║   FACE  →  JSON-RPC  →  TELEGRAM     ║
-║      (no blockchain, we promise)      ║
 ╚══════════════════════════════════════╝
 </pre>
 
