@@ -1,17 +1,6 @@
 # Tele4Faces
 
-<pre align="center">
-╔══════════════════════════════════════╗
-║   FACE  →  JSON-RPC  →  TELEGRAM     ║
-╚══════════════════════════════════════╝
-</pre>
-
-This repo is a **small science experiment**: one Telegram bot, one remote face index 
-
 ---
-
-## What actually happens (field notes)
-
 1. You say **`/start`**. The bot introduces itself like a polite lab assistant.
 2. You say **`/face`**. The bot asks for a **photo** (or an image **document**).
 3. The bot sends the bytes to **search4faces** as **base64** (`detectFaces`), keeps the server-side **`image` id**, picks the **largest** bounding box if several faces exist, then fans out **`searchFace`** calls across the **`source`** databases you configure.
@@ -20,7 +9,7 @@ This repo is a **small science experiment**: one Telegram bot, one remote face i
 ```mermaid
 flowchart LR
   A[/face/] --> B{Photo?}
-  B -->|no| C[Polite nudge]
+  B -->|no| C[nudge]
   B -->|yes| D[detectFaces]
   D --> E[searchFace × sources]
   E --> F[Photo + caption per hit]
