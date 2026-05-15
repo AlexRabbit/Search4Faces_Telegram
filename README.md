@@ -1,66 +1,151 @@
 # Tele4Faces
 
+
+Telegram bot that sends a face photo through **[search4faces.com](https://search4faces.com/)** and returns **public-profile** lookalikes with rich captions and a **two-photo album** per hit (match **+** your original upload).
+
 ---
-1. You say **`/start`**. The bot introduces itself like a polite lab assistant.
-2. You say **`/face`**. The bot asks for a **photo** (or an image **document**).
-3. The bot sends the bytes to **search4faces** as **base64** (`detectFaces`), keeps the server-side **`image` id**, picks the **largest** bounding box if several faces exist, then fans out **`searchFace`** calls across the **`source`** databases you configure.
-4. For each distinct hit, Telegram receives the **thumbnail** (`profile["face"]`) with an **HTML caption**: profile link, score, rough identity fields when the API returns them.
+
+## What it does
+
+| Step | Behavior |
+|------|-----------|
+| **1. Photo in** | Send **any photo** (or **reply `/face`** to an old photo). No warm-up command required. |
+| **2. Detect** | One `detectFaces` call — base64 image, get server `image` id + face box(es). |
+| **3. Multi-face** | Several faces → inline **Face 1 / Face 2 / …**; one face → straight to sources. |
+| **4. Pick databases** | **Multi-select** inline keys (☐ / ✅), then **✔️ Finished**. |
+| **5. Confidence** | Choose **80–100%**, **60–100%**, or **40–100%** (filters API scores client-side). |
+| **6. Search** | One `searchFace` per **checked** source — saves quota vs blasting every index. |
+| **7. Results** | Each match = **media group**: (1) API face thumbnail with HTML caption, (2) **your full original photo** for side-by-side comparison. |
 
 ```mermaid
-flowchart LR
-  A[/face/] --> B{Photo?}
-  B -->|no| C[nudge]
-  B -->|yes| D[detectFaces]
-  D --> E[searchFace × sources]
-  E --> F[Photo + caption per hit]
+flowchart TD
+  A[Photo or /face reply] --> B[detectFaces]
+  B --> C{Faces?}
+  C -->|several| D[Pick face N]
+  C -->|one| E[Source picker]
+  D --> E
+  E --> F[Toggle sources + Finished]
+  F --> G[Pick score band]
+  G --> H[searchFace × chosen sources]
+  H --> I[Album per match]
 ```
 
 ---
+## Prerequisites
 
-   
+- **Python 3.10+** (3.14 on Windows may lack Pillow wheels; bot still runs; optional face helpers degrade gracefully).
+- **Telegram bot token** ([@BotFather](https://t.me/BotFather)).
+- **Search4Faces API key** for live search ([API & contact](https://search4faces.com/api.html)).
+
+---
+
+## Quick start (local)
 
 ```bash
+git clone https://github.com/AlexRabbit/Search4Faces_Telegram.git
+cd Search4Faces_Telegram
 python -m venv .venv
-.venv\Scripts\activate          # Windows
-# source .venv/bin/activate     # macOS / Linux
+```
+
+**Windows**
+
+```bat
+.venv\Scripts\activate
 pip install -r requirements.txt
-copy env.example .env         # then edit .env — Windows
-# cp env.example .env         # Unix
+copy env.example .env
+notepad .env
 python tele4faces.py
 ```
 
-**No Search4Faces key?** Leave `SEARCH4FACES_API_KEY` empty (or keep `MOCK_API=true`). The bot still runs: it serves **deterministic-looking fake matches** so you can test Telegram flows without spending quota.
+**Linux / macOS**
+
+```bash
+source .venv/bin/activate
+pip install -r requirements.txt
+cp env.example .env
+nano .env
+python tele4faces.py
+```
+
+Fill `.env` with `TELEGRAM_BOT_TOKEN` and `SEARCH4FACES_API_KEY` (or leave key blank for mock behaviour).
 
 ---
 
-## Environment variables (recipe card)
+## Deploy 24/7 (Linux VPS)
 
-| Variable | Required | Default vibe |
-|----------|----------|--------------|
-| `TELEGRAM_BOT_TOKEN` | yes | BotFather token (`123456:ABC…`). `TELEGRAM_TOKEN` alias also works. |
-| `SEARCH4FACES_API_KEY` | for real searches | Empty ⇒ **mock mode** unless you force otherwise. |
-| `MOCK_API` | no | `true` / `1` forces mock even if a key is present. |
-| `SEARCH_SOURCES` | no | Comma list; falls back to all documented sources in code. |
-| `RESULTS_PER_SOURCE` | no | `5` (clamped 1–50). |
-| `SOURCE_DELAY_SEC` | no | `0.35` — cheap guardrail between sources. |
-| `SEARCH_LANG` | no | `en` |
-| `INCLUDE_HIDDEN_PROFILES` | no | `true` |
- 
+Example: Ubuntu, app in `/opt/Search4Faces_Telegram`.
+
+```bash
+sudo apt update && sudo apt install -y git python3 python3-venv python3-pip
+cd /opt
+sudo git clone https://github.com/AlexRabbit/Search4Faces_Telegram.git
+cd Search4Faces_Telegram
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+cp env.example .env && nano .env   # add secrets
+```
+
+**systemd** — `/etc/systemd/system/tele4faces.service`:
+
+```ini
+[Unit]
+Description=Search4Faces Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/Search4Faces_Telegram
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/Search4Faces_Telegram/.venv/bin/python /opt/Search4Faces_Telegram/tele4faces.py
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Then:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now tele4faces.service
+sudo journalctl -u tele4faces.service -f
+```
+
+
 ---
 
-## Ethics & safety (non-negotiable)
+## Environment variables
 
-- **Consent**: only process images you are allowed to process.
-- **False positives**: similarity scores are not courtroom evidence.
-- **Abuse**: if you expose this bot publicly, add your own throttling, logging, and moderation.
+| Variable | Required | Notes |
+|----------|----------|--------|
+| `TELEGRAM_BOT_TOKEN` | **yes** | BotFather token. Alias: `TELEGRAM_TOKEN`. |
+| `SEARCH4FACES_API_KEY` | for live API | Empty / placeholder → mock responses. |
+| `MOCK_API` | no | `true` forces mock even if a key is set. |
+| `API_RESULTS_FETCH` | no | Default **10** (clamped 5–30) per `searchFace`. |
+| `SOURCE_DELAY_SEC` | no | Default **1** s between sources. |
+| `SEARCH4FACES_API_URL` | no | Override JSON-RPC URL if needed. |
+| `SEARCH_LANG` | no | Default `en` (see API for `ru`, etc.). |
+| `INCLUDE_HIDDEN_PROFILES` | no | Default `true`. |
+| `TELE4FACES_NO_AUTO_PIP` | no | Set `1` to skip auto `pip install` in `tele4faces.py`. |
+
+---
+
+## Ethics & safety
+
+- Process only images you are **allowed** to process.
+- Similarity scores are **not** proof of identity.
+- If the bot is public, add **rate limits**, logging, and abuse handling yourself.
 
 ---
 
 ## API references
 
-- [search4faces API](https://search4faces.com/api.html)  
-- [JSON-RPC 2.0](https://www.jsonrpc.org/specification)  
-- [Python example archive](https://search4faces.com/api_test_py.zip) (upstream sample; this repo reimplements the flow with mock mode and Telegram UX)
+- [search4faces API](https://search4faces.com/api.html)
+- [JSON-RPC 2.0](https://www.jsonrpc.org/specification)
+- [Python sample (upstream)](https://search4faces.com/api_test_py.zip)
 
 ---
- 
