@@ -1,16 +1,9 @@
 # Tele4Faces
 
-<pre align="center">
-╔══════════════════════════════════════╗
-║   FACE  →  JSON-RPC  →  TELEGRAM     ║
-║     Search4Faces · one bot pipeline  ║
-╚══════════════════════════════════════╝
-</pre>
+ 
 
 Telegram bot that sends a face photo through **[search4faces.com](https://search4faces.com/)** (JSON-RPC: `detectFaces` → `searchFace`) and returns **public-profile** lookalikes with rich captions and a **two-photo album** per hit (match **+** your original upload).
-
-If you are here for drama, wrong repo — this is plumbing and consent hygiene.
-
+ 
 ---
 
 ## What it does
