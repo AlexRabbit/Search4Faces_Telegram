@@ -34,7 +34,7 @@ class Search4FacesClient:
         api_url: str = SEARCH4FACES_DEFAULT_URL,
         *,
         mock: bool = False,
-        timeout: float = 120.0,
+        timeout: float = 121.0,
     ) -> None:
         self.api_key = api_key.strip()
         self.api_url = api_url.rstrip("/")

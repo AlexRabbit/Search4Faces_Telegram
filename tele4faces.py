@@ -62,9 +62,20 @@ from telegram.ext import (
     filters,
 )
 
+from api_pool import ApiKeyPool, build_api_pool
+from bot_storage import (
+    add_api_key,
+    authorize_user,
+    get_owner_id,
+    is_authorized,
+    is_owner,
+    migrate_env_api_key_if_needed,
+    parse_user_target,
+    remove_api_key,
+    unauthorize_user,
+)
 from search4faces_client import (
     SEARCH4FACES_DEFAULT_URL,
-    Search4FacesClient,
     Search4FacesError,
 )
 
@@ -79,11 +90,9 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN = (
     os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("TELEGRAM_TOKEN") or ""
 ).strip()
-PLACEHOLDER_API_KEYS = frozenset({"", "your_search4faces_api_key", "YOUR_SEARCH4FACES_API_KEY"})
 PLACEHOLDER_BOT_TOKENS = frozenset({"your_telegram_bot_token", "YOUR_TELEGRAM_BOT_TOKEN"})
 
-API_KEY = (os.environ.get("SEARCH4FACES_API_KEY") or "").strip()
-API_URL = (os.environ.get("SEARCH4FACES_API_URL") or "").strip() or None
+API_URL = (os.environ.get("SEARCH4FACES_API_URL") or "").strip() or SEARCH4FACES_DEFAULT_URL
 MOCK_ENV = (os.environ.get("MOCK_API") or "").lower() in ("1", "true", "yes")
 
 IMAGE_MIME_TYPES = frozenset(
@@ -101,6 +110,9 @@ IMAGE_MIME_TYPES = frozenset(
 IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".heic", ".heif"})
 EXPECT_KEY = "expecting_face_photo"
 PENDING_KEY = "pending_detection"
+AWAITING_API_KEY = "awaiting_api_key"
+DENIED_HTML = "⛔ You are not authorized to use this bot."
+OWNER_ONLY_HTML = "⛔ This command is only available to the bot owner."
 
 # Search sources (everywhere = all of these, one API call each)
 SEARCH_SOURCE_KEYS = (
@@ -134,22 +146,36 @@ INCLUDE_HIDDEN = (os.environ.get("INCLUDE_HIDDEN_PROFILES") or "true").lower() i
 )
 
 
-def _is_placeholder_api_key(key: str) -> bool:
-    k = key.strip()
-    return not k or k.lower() in {x.lower() for x in PLACEHOLDER_API_KEYS if x}
-
-
-MOCK = MOCK_ENV or _is_placeholder_api_key(API_KEY)
-
 WELCOME_HTML = (
     "<b>Tele4Faces</b> — face search via search4faces.com\n\n"
-    "<b>Commands</b>\n"
-    "/start — intro\n"
-    "/face — optional; reply with <code>/face</code> to an old photo\n"
-    "/quota — API key limits &amp; status\n"
-    "/cancel — cancel current session\n\n"
-    "Send any <b>photo</b> to start. Then: select sources (✅), <b>Finished</b>, "
-    "pick confidence. Each match is an album: result + your face crop."
+    "Send any <b>photo</b> to start. Pick sources (✅), press <b>Finished</b>, "
+    "then choose a confidence band. Each match is an album: result + your original photo.\n\n"
+    "Type /help for all commands."
+)
+
+HELP_USER_HTML = (
+    "<b>📖 Commands</b>\n\n"
+    "/start — welcome message\n"
+    "/help — this list\n"
+    "/face — search a photo (or reply <code>/face</code> to an old one)\n"
+    "/cancel — drop the current face-search session\n"
+    "/quota — API usage limits (no secrets shown)\n\n"
+    "<b>How to search</b>\n"
+    "1. Send a photo (or image file).\n"
+    "2. If several faces appear, pick one.\n"
+    "3. Toggle sources, then <b>Finished</b>.\n"
+    "4. Pick minimum score (80%, 60%, or 40%).\n"
+    "5. Matches arrive as albums (match + your upload).\n\n"
+    "If nothing matches, you can pick another confidence band for the same photo."
+)
+
+HELP_OWNER_HTML = (
+    "\n\n<b>🔐 Owner only</b>\n"
+    "/auth &lt;user_id&gt; — allow a Telegram user by numeric ID\n"
+    "/auth @username — allow by @username\n"
+    "/unauth &lt;id|@user&gt; — revoke access\n"
+    "/api — add, list, or remove Search4Faces API keys (rotation when several)\n\n"
+    "Only the owner can use /api and /auth. Authorized users can search and use /quota."
 )
 
 
@@ -322,30 +348,121 @@ async def download_url_bytes(url: str) -> bytes:
         return r.content
 
 
-def format_quota_message(info: dict[str, Any]) -> str:
+def _quota_status_line(info: dict[str, Any]) -> str:
+    disabled = info.get("disabled")
+    if str(disabled).lower() in ("no", "false", "0"):
+        return "✅ Active"
+    if str(disabled).lower() in ("yes", "true", "1"):
+        return "🚫 Disabled"
+    return f"ℹ️ {html.escape(str(disabled))}"
+
+
+def format_quota_slot(slot: int, total: int, masked_key: str, info: dict[str, Any]) -> str:
     allowed = info.get("allowed") or []
     if isinstance(allowed, list):
         allowed_text = ", ".join(html.escape(str(x)) for x in allowed)
     else:
         allowed_text = html.escape(str(allowed))
 
-    disabled = info.get("disabled")
-    if str(disabled).lower() in ("no", "false", "0"):
-        status = "✅ Active"
-    elif str(disabled).lower() in ("yes", "true", "1"):
-        status = "🚫 Disabled"
-    else:
-        status = f"ℹ️ {html.escape(str(disabled))}"
-
     return (
-        "<b>📊 API quota &amp; status</b>\n\n"
-        f"🔑 <b>API key</b>: <code>{html.escape(str(info.get('apikey', '—')))}</code>\n"
+        f"<b>Key {slot}/{total}</b> — <code>{html.escape(masked_key)}</code>\n"
         f"📈 <b>Limit</b>: <code>{html.escape(str(info.get('limit', '—')))}</code> requests\n"
         f"⏳ <b>Remaining</b>: <code>{html.escape(str(info.get('remaining', '—')))}</code>\n"
         f"📅 <b>Valid until</b>: <code>{html.escape(str(info.get('enddate', '—')))}</code>\n"
         f"⚡ <b>Speed</b>: <code>{html.escape(str(info.get('speed', '—')))}</code> req/min\n"
         f"🧩 <b>Allowed methods</b>: {allowed_text}\n"
-        f"🚦 <b>Key status</b>: {status}"
+        f"🚦 <b>Status</b>: {_quota_status_line(info)}"
+    )
+
+
+def reload_api_pool(context: ContextTypes.DEFAULT_TYPE) -> ApiKeyPool:
+    pool = build_api_pool(API_URL, force_mock=MOCK_ENV)
+    context.application.bot_data["api_pool"] = pool
+    return pool
+
+
+def get_api_pool(context: ContextTypes.DEFAULT_TYPE) -> ApiKeyPool:
+    pool = context.application.bot_data.get("api_pool")
+    if pool is None:
+        return reload_api_pool(context)
+    return pool
+
+
+async def reply_access_denied(update: Update, *, owner_only: bool = False) -> None:
+    text = OWNER_ONLY_HTML if owner_only else DENIED_HTML
+    if update.callback_query:
+        await update.callback_query.answer(text, show_alert=True)
+        return
+    if update.effective_message:
+        await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML)
+
+
+async def ensure_access(update: Update, *, owner_only: bool = False) -> bool:
+    user = update.effective_user
+    if user is None:
+        return False
+    if owner_only:
+        if is_owner(user.id):
+            return True
+        await reply_access_denied(update, owner_only=True)
+        return False
+    if is_authorized(user.id):
+        return True
+    await reply_access_denied(update)
+    return False
+
+
+async def resolve_target_user_id(bot, target: str) -> tuple[int | None, str]:
+    if target.startswith("id:"):
+        return int(target[3:]), ""
+    if target.startswith("user:"):
+        username = target[5:]
+        try:
+            chat = await bot.get_chat(username)
+            return chat.id, username
+        except Exception as exc:  # noqa: BLE001
+            return None, str(exc)
+    return None, "invalid target"
+
+
+def api_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("📋 List keys", callback_data="api:list")],
+            [InlineKeyboardButton("➕ Add key", callback_data="api:add")],
+            [InlineKeyboardButton("➖ Remove key", callback_data="api:remove_menu")],
+            [InlineKeyboardButton("✖️ Close", callback_data="api:close")],
+        ]
+    )
+
+
+def api_remove_keyboard(pool: ApiKeyPool) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for i, masked in enumerate(pool.masked_keys()):
+        rows.append([InlineKeyboardButton(f"🗑 {i + 1}: {masked}", callback_data=f"api:rm:{i}")])
+    rows.append([InlineKeyboardButton("« Back", callback_data="api:menu")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def show_api_menu(message, context: ContextTypes.DEFAULT_TYPE) -> None:
+    pool = get_api_pool(context)
+    masked = pool.masked_keys()
+    lines = [
+        "<b>🔑 API key management</b>",
+        f"Keys in pool: <b>{len(masked)}</b>",
+    ]
+    if masked:
+        lines.append("")
+        for i, m in enumerate(masked, start=1):
+            lines.append(f"{i}. <code>{html.escape(m)}</code>")
+    else:
+        lines.append("\nNo keys loaded — add one or set <code>MOCK_API=true</code> for testing.")
+    if len(masked) > 1:
+        lines.append("\n<i>Rotation: each API call uses the next key in order.</i>")
+    await message.reply_text(
+        "\n".join(lines),
+        parse_mode=ParseMode.HTML,
+        reply_markup=api_menu_keyboard(),
     )
 
 
@@ -449,6 +566,8 @@ def clear_session(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await ensure_access(update):
+        return
     clear_session(context)
     await update.effective_message.reply_text(
         WELCOME_HTML,
@@ -458,15 +577,96 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await cmd_start(update, context)
+    if not await ensure_access(update):
+        return
+    text = HELP_USER_HTML
+    if is_owner(update.effective_user.id if update.effective_user else None):
+        text += HELP_OWNER_HTML
+    await update.effective_message.reply_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+    )
 
 
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await ensure_access(update):
+        return
     clear_session(context)
     await update.effective_message.reply_text("Cancelled. Send /face when you want to search again.")
 
 
+async def cmd_auth(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await ensure_access(update, owner_only=True):
+        return
+    msg = update.effective_message
+    if not context.args:
+        await msg.reply_text(
+            "Usage: <code>/auth &lt;user_id&gt;</code> or <code>/auth @username</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    target = parse_user_target(context.args[0])
+    if not target:
+        await msg.reply_text("Invalid user. Use a numeric ID or @username.")
+        return
+
+    label = context.args[0].strip()
+    try:
+        user_id, err = await resolve_target_user_id(context.bot, target)
+    except ValueError:
+        await msg.reply_text("Invalid user ID.")
+        return
+
+    if user_id is None:
+        await msg.reply_text(f"Could not resolve user: {html.escape(err)}", parse_mode=ParseMode.HTML)
+        return
+
+    ok, reply = authorize_user(user_id, label if target.startswith("user:") else "")
+    await msg.reply_text(reply, parse_mode=ParseMode.HTML)
+
+
+async def cmd_unauth(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await ensure_access(update, owner_only=True):
+        return
+    msg = update.effective_message
+    if not context.args:
+        await msg.reply_text(
+            "Usage: <code>/unauth &lt;user_id&gt;</code> or <code>/unauth @username</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    target = parse_user_target(context.args[0])
+    if not target:
+        await msg.reply_text("Invalid user. Use a numeric ID or @username.")
+        return
+
+    try:
+        user_id, err = await resolve_target_user_id(context.bot, target)
+    except ValueError:
+        await msg.reply_text("Invalid user ID.")
+        return
+
+    if user_id is None:
+        await msg.reply_text(f"Could not resolve user: {html.escape(err)}", parse_mode=ParseMode.HTML)
+        return
+
+    ok, reply = unauthorize_user(user_id)
+    await msg.reply_text(reply, parse_mode=ParseMode.HTML)
+
+
+async def cmd_api(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await ensure_access(update, owner_only=True):
+        return
+    context.user_data.pop(AWAITING_API_KEY, None)
+    await show_api_menu(update.effective_message, context)
+
+
 async def cmd_face(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await ensure_access(update):
+        return
     msg = update.effective_message
     if msg is None:
         return
@@ -487,18 +687,35 @@ async def cmd_face(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_quota(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    client: Search4FacesClient = context.bot_data["s4f"]
-    try:
-        info = await client.rate_limit()
-    except Search4FacesError as exc:
-        await update.effective_message.reply_text(f"❌ API error: {exc}")
-        return
-    except Exception as exc:  # noqa: BLE001
-        await update.effective_message.reply_text(f"❌ Request failed: {exc}")
+    if not await ensure_access(update):
         return
 
+    pool = get_api_pool(context)
+    if pool.mock:
+        await update.effective_message.reply_text(
+            "<b>📊 API quota</b>\n\nMock mode — no live API keys in the pool. "
+            "Owner: use /api to add keys.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    masked = pool.masked_keys()
+    blocks: list[str] = ["<b>📊 API quota</b>"]
+    for i in range(pool.key_count):
+        try:
+            info = await pool.client_for_index(i).rate_limit()
+        except Search4FacesError as exc:
+            blocks.append(f"\n<b>Key {i + 1}/{len(masked)}</b>: ❌ {html.escape(str(exc))}")
+            continue
+        except Exception as exc:  # noqa: BLE001
+            blocks.append(f"\n<b>Key {i + 1}/{len(masked)}</b>: ❌ {html.escape(str(exc))}")
+            continue
+        blocks.append(
+            "\n" + format_quota_slot(i + 1, len(masked), masked[i], info)
+        )
+
     await update.effective_message.reply_text(
-        format_quota_message(info),
+        "\n".join(blocks),
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
     )
@@ -506,6 +723,9 @@ async def cmd_quota(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def process_face_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, image_msg) -> None:
     """Run detectFaces and show face/source pickers for any image message."""
+    if not await ensure_access(update):
+        return
+
     reply_msg = update.effective_message
     if reply_msg is None or image_msg is None:
         return
@@ -516,7 +736,8 @@ async def process_face_photo(update: Update, context: ContextTypes.DEFAULT_TYPE,
         return
 
     context.user_data[EXPECT_KEY] = False
-    client: Search4FacesClient = context.bot_data["s4f"]
+    pool = get_api_pool(context)
+    client = pool.next_client()
 
     try:
         image_bytes = await download_telegram_file(context.bot, file_id)
@@ -571,9 +792,104 @@ async def on_image_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await process_face_photo(update, context, msg)
 
 
+async def on_owner_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_user or not is_owner(update.effective_user.id):
+        return
+    if not context.user_data.get(AWAITING_API_KEY):
+        return
+    msg = update.effective_message
+    if msg is None or not msg.text:
+        return
+
+    key = msg.text.strip()
+    context.user_data.pop(AWAITING_API_KEY, None)
+    ok, reply = add_api_key(key)
+    reload_api_pool(context)
+    await msg.reply_text(html.escape(reply), parse_mode=ParseMode.HTML)
+    await show_api_menu(msg, context)
+
+
+async def on_api_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if query is None or query.data is None:
+        return
+    if not await ensure_access(update, owner_only=True):
+        return
+
+    data = query.data
+    pool = get_api_pool(context)
+
+    if data == "api:close":
+        await query.answer("Closed.")
+        try:
+            await query.message.delete()
+        except Exception:  # noqa: BLE001
+            await query.edit_message_reply_markup(reply_markup=None)
+        return
+
+    if data == "api:menu":
+        await query.answer()
+        masked = pool.masked_keys()
+        text = f"<b>🔑 API keys</b>: {len(masked)} in pool"
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=api_menu_keyboard(),
+        )
+        return
+
+    if data == "api:list":
+        await query.answer()
+        masked = pool.masked_keys()
+        if not masked:
+            body = "No API keys in the pool."
+        else:
+            body = "\n".join(f"{i}. <code>{html.escape(m)}</code>" for i, m in enumerate(masked, start=1))
+        await query.message.reply_text(body, parse_mode=ParseMode.HTML)
+        return
+
+    if data == "api:add":
+        context.user_data[AWAITING_API_KEY] = True
+        await query.answer()
+        await query.message.reply_text(
+            "Send the new Search4Faces API key in this chat (one message). "
+            "It will be stored locally and never shown in full again.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    if data == "api:remove_menu":
+        await query.answer()
+        if not pool.masked_keys():
+            await query.message.reply_text("No keys to remove.")
+            return
+        await query.message.reply_text(
+            "Tap a key to remove:",
+            reply_markup=api_remove_keyboard(pool),
+        )
+        return
+
+    if data.startswith("api:rm:"):
+        try:
+            idx = int(data.split(":", 2)[2])
+        except ValueError:
+            await query.answer("Invalid slot.", show_alert=True)
+            return
+        ok, reply = remove_api_key(idx)
+        reload_api_pool(context)
+        await query.answer("Removed." if ok else "Failed.", show_alert=True)
+        await query.message.reply_text(reply)
+        await show_api_menu(query.message, context)
+        return
+
+    await query.answer()
+
+
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     if query is None or query.data is None:
+        return
+    if not await ensure_access(update):
         return
 
     pending = context.user_data.get(PENDING_KEY)
@@ -684,8 +1000,15 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             f"<b>{min_score:g}–{MAX_SCORE:g}%</b>…",
             parse_mode=ParseMode.HTML,
         )
-        await run_search(query.message, context, selected, min_score=min_score)
-        clear_session(context)
+        total = await run_search(query.message, context, selected, min_score=min_score)
+        if total > 0:
+            clear_session(context)
+        else:
+            await query.message.reply_text(
+                "🎚 <b>Try another minimum match score</b> for the same photo:",
+                parse_mode=ParseMode.HTML,
+                reply_markup=confidence_keyboard(),
+            )
         return
 
     await query.answer()
@@ -698,13 +1021,13 @@ async def run_search(
     *,
     min_score: float,
     max_score: float = MAX_SCORE,
-) -> None:
+) -> int:
     pending = context.user_data.get(PENDING_KEY)
     if not pending:
         await anchor_message.reply_text("Session expired. Send a new photo.")
-        return
+        return 0
 
-    client: Search4FacesClient = context.bot_data["s4f"]
+    pool = get_api_pool(context)
     api_face_box = pending["faces"][pending["face_idx"]]
     image_id = pending["image_id"]
     submitted_image = pending["image_bytes"]
@@ -714,6 +1037,7 @@ async def run_search(
     total_albums = 0
 
     for source in sources:
+        client = pool.next_client()
         try:
             profiles = await client.search_face(
                 image_id,
@@ -797,6 +1121,8 @@ async def run_search(
             parse_mode=ParseMode.HTML,
         )
 
+    return total_albums
+
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error("Unhandled exception: %s", context.error)
@@ -819,15 +1145,16 @@ def main() -> None:
     if not _token_ok(TELEGRAM_TOKEN):
         raise SystemExit("Set TELEGRAM_BOT_TOKEN in .env")
 
-    client = Search4FacesClient(
-        api_key=API_KEY or "mock",
-        api_url=API_URL or SEARCH4FACES_DEFAULT_URL,
-        mock=MOCK,
-    )
-    if MOCK:
-        logger.warning("Search4Faces mock mode.")
+    owner = get_owner_id()
+    if owner is None:
+        raise SystemExit("Set OWNER_USER_ID in .env (your Telegram numeric user ID).")
+
+    migrate_env_api_key_if_needed()
+    pool = build_api_pool(API_URL, force_mock=MOCK_ENV)
+    if pool.mock:
+        logger.warning("Search4Faces mock mode (no keys or MOCK_API=true).")
     else:
-        logger.info("Search4Faces live mode.")
+        logger.info("Search4Faces live mode — %s API key(s), rotation enabled.", pool.key_count)
 
     application = (
         Application.builder()
@@ -838,7 +1165,7 @@ def main() -> None:
         .pool_timeout(30.0)
         .build()
     )
-    application.bot_data["s4f"] = client
+    application.bot_data["api_pool"] = pool
     application.add_error_handler(on_error)
 
     application.add_handler(CommandHandler("start", cmd_start))
@@ -846,7 +1173,14 @@ def main() -> None:
     application.add_handler(CommandHandler("face", cmd_face))
     application.add_handler(CommandHandler("cancel", cmd_cancel))
     application.add_handler(CommandHandler(["quota", "ratelimit"], cmd_quota))
+    application.add_handler(CommandHandler("auth", cmd_auth))
+    application.add_handler(CommandHandler("unauth", cmd_unauth))
+    application.add_handler(CommandHandler("api", cmd_api))
+    application.add_handler(CallbackQueryHandler(on_api_callback, pattern=r"^api:"))
     application.add_handler(CallbackQueryHandler(on_callback))
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, on_owner_text),
+    )
     application.add_handler(MessageHandler(filters.PHOTO, on_image_message))
     application.add_handler(MessageHandler(filters.Document.ALL, on_image_message))
 

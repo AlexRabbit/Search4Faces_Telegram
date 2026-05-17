@@ -1,7 +1,15 @@
 # Tele4Faces
 
+<pre align="center">
+╔══════════════════════════════════════╗
+║   FACE  →  JSON-RPC  →  TELEGRAM     ║
+║     Search4Faces · one bot pipeline  ║
+╚══════════════════════════════════════╝
+</pre>
 
-Telegram bot that sends a face photo through **[search4faces.com](https://search4faces.com/)** and returns **public-profile** lookalikes with rich captions and a **two-photo album** per hit (match **+** your original upload).
+Telegram bot that sends a face photo through **[search4faces.com](https://search4faces.com/)** (JSON-RPC: `detectFaces` → `searchFace`) and returns **public-profile** lookalikes with rich captions and a **two-photo album** per hit (match **+** your original upload).
+
+If you are here for drama, wrong repo — this is plumbing and consent hygiene.
 
 ---
 
@@ -31,6 +39,28 @@ flowchart TD
 ```
 
 ---
+
+## Features (the sales pitch, but honest)
+
+- **Frictionless UX** — drop a selfie; the bot starts.
+- **Reply `/face`** — run on a photo already in the chat.
+- **Checkmark source picker** — Vkontakte, OK/VK eras, TikTok, Clubhouse, “Famous People”; only selected indices hit the API.
+- **Three confidence bands** — don’t pay Telegram tax on junk scores.
+- **Quota-aware defaults** — spacing between sources, capped fetch size, 121s API HTTP timeout.
+- **`/quota`** — pretty view of `rateLimit` per key slot (remaining, end date, speed, allowed methods). **Never shows full API keys.**
+- **`/cancel`** — drop the current session.
+- **Owner-only access** — set `OWNER_USER_ID` in `.env`; only the owner can use the bot until they `/auth` others.
+- **`/auth`** / **`/unauth`** — owner grants or revokes access by numeric ID or `@username`.
+- **`/api`** (owner only) — inline menu to list, add, or remove API keys; keys stored in `data/api_keys.json` (masked in chat).
+- **Multi-key rotation** — several keys in the pool; each API call uses the next key in round-robin order.
+- **`/help`** — command reference without secrets (extra owner commands shown only to the owner).
+- **Zero-match retry** — if no results in the chosen band, the confidence keyboard is offered again for the same photo.
+- **Auto `pip install`** on first run if deps missing (disable with `TELE4FACES_NO_AUTO_PIP`).
+- **Mock mode** — empty or placeholder API key → simulated responses for UI testing.
+- **No “face crop” link clutter** in captions; **Source Photo** = social album URL (e.g. VK photo page), **Source image** = direct image URL when present.
+
+---
+
 ## Prerequisites
 
 - **Python 3.10+** (3.14 on Windows may lack Pillow wheels; bot still runs; optional face helpers degrade gracefully).
@@ -67,7 +97,23 @@ nano .env
 python tele4faces.py
 ```
 
-Fill `.env` with `TELEGRAM_BOT_TOKEN` and `SEARCH4FACES_API_KEY` (or leave key blank for mock behaviour).
+Fill `.env` with `TELEGRAM_BOT_TOKEN`, **`OWNER_USER_ID`** (your Telegram numeric ID), and optionally `SEARCH4FACES_API_KEY` (or leave key blank for mock behaviour).
+
+---
+
+## Access control & API keys
+
+1. **`OWNER_USER_ID`** (required) — only this Telegram account is the owner. The bot will not start without it.
+2. **Default lock** — nobody else can search until the owner runs `/auth`.
+3. **Grant access** (owner only):
+   - `/auth 123456789` — allow by numeric user ID
+   - `/auth @username` — allow by @username (the user must exist and be reachable by the bot)
+4. **Revoke access** (owner only): `/unauth 123456789` or `/unauth @username`
+5. **`/api`** (owner only) — inline buttons to **list**, **add**, or **remove** Search4Faces API keys. Keys are saved under `data/api_keys.json` (gitignored). In chat you only see **masked** keys (e.g. `****-abcd`).
+6. **First run** — if `data/api_keys.json` is empty, the bot imports `SEARCH4FACES_API_KEY` from `.env` once, then prefers the JSON file.
+7. **Multiple keys** — each `detectFaces` / `searchFace` / `rateLimit` call uses the **next key in rotation** (round-robin).
+8. **`/quota`** — shows `rateLimit` for every key slot; **no full API keys** are ever posted.
+9. **`/help`** — lists commands; owner-only lines appear only for the owner.
 
 ---
 
@@ -115,6 +161,9 @@ sudo systemctl enable --now tele4faces.service
 sudo journalctl -u tele4faces.service -f
 ```
 
+Use **one** polling instance globally (stop local runs when VPS is live).
+
+**Non-default SSH port** — always pass your port, e.g. `ssh -p 22022 user@host`.
 
 ---
 
@@ -149,3 +198,13 @@ sudo journalctl -u tele4faces.service -f
 - [Python sample (upstream)](https://search4faces.com/api_test_py.zip)
 
 ---
+
+## License
+
+Add a `LICENSE` file that matches how you want this project shared (this repo may already include one on GitHub).
+
+---
+
+<p align="center">
+  <sub>Built for operators who read env vars before screenshots.</sub>
+</p>
