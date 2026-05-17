@@ -1,3 +1,5 @@
+If this helped you, consider starring the repo ⭐
+
 # Tele4Faces
 
  
