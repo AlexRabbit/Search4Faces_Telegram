@@ -35,26 +35,6 @@ flowchart TD
 
 ---
 
-## Features (the sales pitch, but honest)
-
-- **Frictionless UX** — drop a selfie; the bot starts.
-- **Reply `/face`** — run on a photo already in the chat.
-- **Checkmark source picker** — Vkontakte, OK/VK eras, TikTok, Clubhouse, “Famous People”; only selected indices hit the API.
-- **Three confidence bands** — don’t pay Telegram tax on junk scores.
-- **Quota-aware defaults** — spacing between sources, capped fetch size, 121s API HTTP timeout.
-- **`/quota`** — pretty view of `rateLimit` per key slot (remaining, end date, speed, allowed methods). **Never shows full API keys.**
-- **`/cancel`** — drop the current session.
-- **Owner-only access** — set `OWNER_USER_ID` in `.env`; only the owner can use the bot until they `/auth` others.
-- **`/auth`** / **`/unauth`** — owner grants or revokes access by numeric ID or `@username`.
-- **`/api`** (owner only) — inline menu to list, add, or remove API keys; keys stored in `data/api_keys.json` (masked in chat).
-- **Multi-key rotation** — several keys in the pool; each API call uses the next key in round-robin order.
-- **`/help`** — command reference without secrets (extra owner commands shown only to the owner).
-- **Zero-match retry** — if no results in the chosen band, the confidence keyboard is offered again for the same photo.
-- **Auto `pip install`** on first run if deps missing (disable with `TELE4FACES_NO_AUTO_PIP`).
-- **Mock mode** — empty or placeholder API key → simulated responses for UI testing.
-- **No “face crop” link clutter** in captions; **Source Photo** = social album URL (e.g. VK photo page), **Source image** = direct image URL when present.
-
----
 
 ## Prerequisites
 
